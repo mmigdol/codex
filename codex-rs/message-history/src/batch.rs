@@ -5,6 +5,7 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::path::Path;
+use std::time::SystemTime;
 
 use memchr::memchr_iter;
 
@@ -28,7 +29,7 @@ const MAX_BATCH_BYTES: usize = 64 * 1024;
 pub struct HistoryBatchCursor {
     end_offset: usize,
     byte_position: Option<u64>,
-    observed_file_len: Option<u64>,
+    observed_revision: Option<HistoryFileRevision>,
 }
 
 impl HistoryBatchCursor {
@@ -37,7 +38,7 @@ impl HistoryBatchCursor {
         Self {
             end_offset,
             byte_position: None,
-            observed_file_len: None,
+            observed_revision: None,
         }
     }
 
@@ -51,12 +52,36 @@ impl HistoryBatchCursor {
         self.byte_position
     }
 
-    fn anchored(end_offset: usize, byte_position: u64, observed_file_len: u64) -> Self {
+    fn anchored(
+        end_offset: usize,
+        byte_position: u64,
+        observed_revision: HistoryFileRevision,
+    ) -> Self {
         Self {
             end_offset,
             byte_position: Some(byte_position),
-            observed_file_len: Some(observed_file_len),
+            observed_revision: Some(observed_revision),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HistoryFileRevision {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl HistoryFileRevision {
+    fn read(file: &File) -> std::io::Result<Self> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+
+    fn matches(self, other: Self) -> bool {
+        self.modified.is_some() && self == other
     }
 }
 
@@ -136,23 +161,23 @@ fn lookup_batch_from_file(
 }
 
 fn scan_batch(file: &mut File, cursor: HistoryBatchCursor) -> std::io::Result<HistoryBatch> {
-    let file_len = file.metadata()?.len();
-    if let (Some(byte_position), Some(observed_file_len)) =
-        (cursor.byte_position, cursor.observed_file_len)
-        && byte_position <= file_len
-        && observed_file_len <= file_len
+    let revision = HistoryFileRevision::read(file)?;
+    if let (Some(byte_position), Some(observed_revision)) =
+        (cursor.byte_position, cursor.observed_revision)
+        && byte_position <= revision.len
+        && observed_revision.matches(revision)
     {
-        return scan_batch_backward(file, cursor.end_offset, byte_position, file_len);
+        return scan_batch_backward(file, cursor.end_offset, byte_position, revision);
     }
 
     file.seek(SeekFrom::Start(0))?;
-    scan_batch_forward(file, cursor.end_offset, file_len)
+    scan_batch_forward(file, cursor.end_offset, revision)
 }
 
 fn scan_batch_forward(
     file: &mut File,
     end_offset: usize,
-    file_len: u64,
+    revision: HistoryFileRevision,
 ) -> std::io::Result<HistoryBatch> {
     let mut suffix = VecDeque::new();
     let mut suffix_bytes = 0usize;
@@ -173,7 +198,7 @@ fn scan_batch_forward(
                     pending,
                 );
             }
-            return Ok(finish_forward_batch(suffix, file_len));
+            return Ok(finish_forward_batch(suffix, revision));
         }
 
         let chunk = &read_buffer[..read];
@@ -191,7 +216,7 @@ fn scan_batch_forward(
                 );
             }
             if offset == end_offset {
-                return Ok(finish_forward_batch(suffix, file_len));
+                return Ok(finish_forward_batch(suffix, revision));
             }
             offset = offset.saturating_add(1);
             row_start = newline + 1;
@@ -205,7 +230,7 @@ fn scan_batch_backward(
     file: &mut File,
     end_offset: usize,
     end_byte_position: u64,
-    file_len: u64,
+    revision: HistoryFileRevision,
 ) -> std::io::Result<HistoryBatch> {
     let mut entries = Vec::new();
     let mut entries_bytes = 0usize;
@@ -230,10 +255,10 @@ fn scan_batch_backward(
                     bytes: std::mem::take(&mut reversed_row),
                 };
                 if !retain_newest_row(&mut entries, &mut entries_bytes, raw) {
-                    return Ok(finish_batch(entries, file_len));
+                    return Ok(finish_batch(entries, revision));
                 }
                 let Some(next_offset) = offset.checked_sub(1) else {
-                    return Ok(finish_batch(entries, file_len));
+                    return Ok(finish_batch(entries, revision));
                 };
                 offset = next_offset;
                 reversed_row.push(b'\n');
@@ -256,7 +281,7 @@ fn scan_batch_backward(
             },
         );
     }
-    Ok(finish_batch(entries, file_len))
+    Ok(finish_batch(entries, revision))
 }
 
 fn retain_row(
@@ -310,14 +335,17 @@ fn retain_newest_row(
     true
 }
 
-fn finish_forward_batch(suffix: VecDeque<RawHistoryBatchEntry>, file_len: u64) -> HistoryBatch {
-    finish_batch(suffix.into_iter().rev().collect(), file_len)
+fn finish_forward_batch(
+    suffix: VecDeque<RawHistoryBatchEntry>,
+    revision: HistoryFileRevision,
+) -> HistoryBatch {
+    finish_batch(suffix.into_iter().rev().collect(), revision)
 }
 
-fn finish_batch(entries: Vec<RawHistoryBatchEntry>, file_len: u64) -> HistoryBatch {
+fn finish_batch(entries: Vec<RawHistoryBatchEntry>, revision: HistoryFileRevision) -> HistoryBatch {
     let next_older_cursor = entries.last().and_then(|entry| {
         entry.offset.checked_sub(1).map(|end_offset| {
-            HistoryBatchCursor::anchored(end_offset, entry.byte_position, file_len)
+            HistoryBatchCursor::anchored(end_offset, entry.byte_position, revision)
         })
     });
     let entries = entries

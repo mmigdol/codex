@@ -72,6 +72,39 @@ async fn search_batch_returns_bounded_newest_first_absolute_offsets() {
 }
 
 #[tokio::test]
+async fn search_batch_invalidates_byte_cursor_after_in_place_rewrite() {
+    let original: Vec<_> = (0..400)
+        .map(|offset| entry(offset, format!("old row {offset}")))
+        .collect();
+    let (home, batch) = batch_for(&original, /*end_offset*/ 399).await;
+    let cursor = batch.next_older_cursor.expect("older cursor");
+    let config = HistoryConfig::new(home.path(), &History::default());
+    let (log_id, _) = history_metadata(&config).await;
+    let original_len = std::fs::metadata(home.path().join(HISTORY_FILENAME))
+        .expect("history metadata")
+        .len();
+
+    let replacement: Vec<_> = (0..500)
+        .map(|offset| entry(offset, format!("replacement row {offset} with padding")))
+        .collect();
+    let replacement_config = write_entries(&home, &replacement);
+    let replacement_len = std::fs::metadata(home.path().join(HISTORY_FILENAME))
+        .expect("replacement history metadata")
+        .len();
+    assert!(replacement_len > original_len);
+    let (replacement_log_id, _) = history_metadata(&replacement_config).await;
+    assert_eq!(replacement_log_id, log_id);
+
+    let older =
+        lookup_batch(log_id, cursor, &replacement_config).expect("read rewritten history batch");
+    assert_eq!(older.entries.len(), 128);
+    assert_eq!(older.entries[0].offset, 271);
+    assert_eq!(older.entries[0].entry, Some(replacement[271].clone()));
+    assert_eq!(older.entries[127].offset, 144);
+    assert_eq!(older.entries[127].entry, Some(replacement[144].clone()));
+}
+
+#[tokio::test]
 async fn search_batch_stitches_chunks_and_keeps_malformed_offsets() {
     let home = TempDir::new().expect("temp dir");
     let first = entry(0, "a".repeat(HISTORY_READ_BUFFER_SIZE + 17));
