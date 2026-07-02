@@ -527,11 +527,11 @@ impl App {
         );
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let batch_result = tokio::task::spawn_blocking(move || {
+            let event = match tokio::task::spawn_blocking(move || {
                 codex_message_history::lookup_batch(log_id, cursor, &history_config)
             })
-            .await;
-            let event = match batch_result {
+            .await
+            {
                 Ok(Ok(batch)) => {
                     let entries = batch
                         .entries

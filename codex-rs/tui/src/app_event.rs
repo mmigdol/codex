@@ -64,6 +64,10 @@ pub(crate) enum ThreadGoalSetMode {
     },
 }
 
+/// One absolute history offset returned by a batch lookup.
+///
+/// Malformed rows retain their offset with `entry` set to `None` so the composer can cache the gap
+/// without shifting every older record.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HistoryBatchEntryResponse {
     pub(crate) offset: usize,

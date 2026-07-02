@@ -7,6 +7,7 @@ use super::PendingHistorySearch;
 use crate::app_event::AppEvent;
 use crate::app_event::HistoryBatchEntryResponse;
 use crate::app_event_sender::AppEventSender;
+use codex_message_history::HistoryBatchCursor;
 
 impl ChatComposerHistory {
     /// Applies a query-independent batch to the persistent cache and, when still applicable,
@@ -14,9 +15,9 @@ impl ChatComposerHistory {
     pub(crate) fn on_batch_response(
         &mut self,
         log_id: u64,
-        cursor: codex_message_history::HistoryBatchCursor,
+        cursor: HistoryBatchCursor,
         entries: Vec<HistoryBatchEntryResponse>,
-        next_older_cursor: Option<codex_message_history::HistoryBatchCursor>,
+        next_older_cursor: Option<HistoryBatchCursor>,
         app_event_tx: &AppEventSender,
     ) -> Option<HistorySearchResult> {
         if self.persistent_log_id != Some(log_id) {
@@ -29,11 +30,10 @@ impl ChatComposerHistory {
                 let entry = response.entry.map(|text| {
                     HistoryEntry::new_with_at_mentions(text, self.at_mention_restore_enabled)
                 });
-                if let Some(entry) = entry.clone() {
-                    self.fetched_history_misses.remove(&response.offset);
-                    self.fetched_history.insert(response.offset, entry);
+                if entry.is_some() {
+                    self.fetched_history.insert(response.offset, entry.clone());
                 } else {
-                    self.fetched_history_misses.insert(response.offset);
+                    self.fetched_history.entry(response.offset).or_insert(None);
                 }
                 (response.offset, entry)
             })
@@ -80,7 +80,7 @@ impl ChatComposerHistory {
     pub(crate) fn on_batch_error(
         &mut self,
         log_id: u64,
-        cursor: codex_message_history::HistoryBatchCursor,
+        cursor: HistoryBatchCursor,
         app_event_tx: &AppEventSender,
     ) -> Option<HistorySearchResult> {
         if self.persistent_log_id != Some(log_id) {
@@ -142,15 +142,20 @@ impl ChatComposerHistory {
                 .exhausted_search_result(HistorySearchDirection::Older, boundary_if_exhausted);
         };
         self.advance_older_search_with_batches_from(
-            codex_message_history::HistoryBatchCursor::new(next_offset),
+            HistoryBatchCursor::new(next_offset),
             boundary_if_exhausted,
             app_event_tx,
         )
     }
 
+    /// Scans cached offsets from a batch cursor and requests the first uncached older range.
+    ///
+    /// The byte anchor remains usable only while scanning begins at its exact `end_offset`; moving
+    /// past cached entries creates an offset-only cursor because no validated byte boundary exists
+    /// for those intermediate positions.
     fn advance_older_search_with_batches_from(
         &mut self,
-        mut cursor: codex_message_history::HistoryBatchCursor,
+        mut cursor: HistoryBatchCursor,
         boundary_if_exhausted: bool,
         app_event_tx: &AppEventSender,
     ) -> HistorySearchResult {
@@ -160,7 +165,7 @@ impl ChatComposerHistory {
                 if self.search_matches(&entry) && self.search_result_is_unique(&entry) {
                     return self.search_match(offset, entry);
                 }
-            } else if !self.fetched_history_misses.contains(&offset)
+            } else if !self.fetched_history.contains_key(&offset)
                 && offset < self.persistent_entry_count
             {
                 return self.request_older_search_batch(
@@ -175,13 +180,13 @@ impl ChatComposerHistory {
                     .exhausted_search_result(HistorySearchDirection::Older, boundary_if_exhausted);
             };
             offset = next_offset;
-            cursor = codex_message_history::HistoryBatchCursor::new(offset);
+            cursor = HistoryBatchCursor::new(offset);
         }
     }
 
     pub(super) fn request_older_search_batch(
         &mut self,
-        cursor: codex_message_history::HistoryBatchCursor,
+        cursor: HistoryBatchCursor,
         boundary_if_exhausted: bool,
         app_event_tx: &AppEventSender,
     ) -> HistorySearchResult {

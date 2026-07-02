@@ -11,10 +11,10 @@ fn thread_id(value: u8) -> ThreadId {
         .expect("thread id should parse")
 }
 
-fn batch_entry(offset: usize, entry: Option<&str>) -> HistoryBatchEntryResponse {
+fn batch_entry(offset: usize, entry: &str) -> HistoryBatchEntryResponse {
     HistoryBatchEntryResponse {
         offset,
-        entry: entry.map(str::to_string),
+        entry: Some(entry.to_string()),
     }
 }
 
@@ -30,6 +30,15 @@ fn history(
     let mut history = ChatComposerHistory::new();
     history.set_metadata(thread_id(1), /*log_id*/ 42, entry_count);
     (history, tx, rx)
+}
+
+fn recv_batch_request(rx: &mut UnboundedReceiver<AppEvent>) -> (HistoryBatchCursor, u64) {
+    let AppEvent::LookupMessageHistoryBatch { cursor, log_id, .. } =
+        rx.try_recv().expect("batch request")
+    else {
+        panic!("expected batch request");
+    };
+    (cursor, log_id)
 }
 
 fn start_older_search(
@@ -58,11 +67,7 @@ fn start_older_search(
         history.on_entry_response(log_id, offset, Some("unrelated entry".to_string()), tx),
         HistoryEntryResponse::Search(HistorySearchResult::Pending)
     );
-    let AppEvent::LookupMessageHistoryBatch { cursor, .. } =
-        rx.try_recv().expect("older batch request")
-    else {
-        panic!("expected bounded batch request");
-    };
+    let (cursor, _) = recv_batch_request(rx);
     assert_eq!(cursor.end_offset(), newest_offset - 1);
     cursor
 }
@@ -76,7 +81,7 @@ fn search_batch_late_data_is_cache_only_after_cancel_or_query_edit() {
         cancelled.on_batch_response(
             42,
             HistoryBatchCursor::new(3),
-            vec![batch_entry(3, Some("cached match"))],
+            vec![batch_entry(3, "cached match")],
             Some(HistoryBatchCursor::new(2)),
             &tx,
         ),
@@ -114,7 +119,7 @@ fn search_batch_late_data_is_cache_only_after_cancel_or_query_edit() {
         edited.on_batch_response(
             42,
             HistoryBatchCursor::new(3),
-            vec![batch_entry(3, Some("old data"))],
+            vec![batch_entry(3, "old data")],
             Some(HistoryBatchCursor::new(2)),
             &tx,
         ),
@@ -137,14 +142,13 @@ fn search_batch_rejects_stale_thread_and_log_metadata() {
         history.on_batch_response(
             42,
             HistoryBatchCursor::new(3),
-            vec![batch_entry(3, Some("stale match"))],
+            vec![batch_entry(3, "stale match")],
             Some(HistoryBatchCursor::new(2)),
             &tx,
         ),
         None
     );
     assert!(history.fetched_history.is_empty());
-    assert!(history.fetched_history_misses.is_empty());
 }
 
 #[test]
@@ -157,14 +161,7 @@ fn search_batch_read_failure_stops_after_bounded_retries() {
             history.on_batch_error(42, cursor, &tx),
             Some(HistorySearchResult::Pending)
         );
-        let AppEvent::LookupMessageHistoryBatch {
-            cursor: retry_cursor,
-            log_id,
-            ..
-        } = rx.try_recv().expect("retry batch request")
-        else {
-            panic!("expected bounded batch retry");
-        };
+        let (retry_cursor, log_id) = recv_batch_request(&mut rx);
         assert_eq!((retry_cursor, log_id), (cursor, 42));
     }
 
@@ -190,9 +187,9 @@ fn search_batch_match_preserves_cursor_for_next_older_search() {
             42,
             cursor,
             vec![
-                batch_entry(5, Some("unrelated newer")),
-                batch_entry(4, Some("needle first")),
-                batch_entry(3, Some("unrelated older")),
+                batch_entry(5, "unrelated newer"),
+                batch_entry(4, "needle first"),
+                batch_entry(3, "unrelated older"),
             ],
             Some(continuation),
             &tx,
@@ -211,13 +208,7 @@ fn search_batch_match_preserves_cursor_for_next_older_search() {
         ),
         HistorySearchResult::Pending
     );
-    let AppEvent::LookupMessageHistoryBatch {
-        cursor: requested_cursor,
-        ..
-    } = rx.try_recv().expect("continuation batch request")
-    else {
-        panic!("expected continuation batch request");
-    };
+    let (requested_cursor, _) = recv_batch_request(&mut rx);
     assert_eq!(requested_cursor, continuation);
     assert!(rx.try_recv().is_err());
 
@@ -225,7 +216,7 @@ fn search_batch_match_preserves_cursor_for_next_older_search() {
         history.on_batch_response(
             42,
             continuation,
-            vec![batch_entry(2, Some("needle second"))],
+            vec![batch_entry(2, "needle second")],
             None,
             &tx,
         ),
@@ -246,7 +237,7 @@ fn search_batch_absent_1024_uses_one_single_and_eight_batches() {
         let start_offset = end_offset.saturating_sub(127);
         let entries = (start_offset..=end_offset)
             .rev()
-            .map(|offset| batch_entry(offset, Some("unrelated entry")))
+            .map(|offset| batch_entry(offset, "unrelated entry"))
             .collect();
         let next_older_cursor = start_offset.checked_sub(1).map(HistoryBatchCursor::new);
         let expected = if next_older_cursor.is_some() {
@@ -262,11 +253,7 @@ fn search_batch_absent_1024_uses_one_single_and_eight_batches() {
         let Some(expected_cursor) = next_older_cursor else {
             break;
         };
-        let AppEvent::LookupMessageHistoryBatch { cursor: next, .. } =
-            rx.try_recv().expect("next older batch")
-        else {
-            panic!("expected bounded batch request");
-        };
+        let (next, _) = recv_batch_request(&mut rx);
         assert_eq!(next, expected_cursor);
         cursor = next;
     }

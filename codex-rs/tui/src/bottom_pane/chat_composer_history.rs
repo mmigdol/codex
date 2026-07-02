@@ -133,10 +133,8 @@ pub(crate) struct ChatComposerHistory {
     /// Local entries seeded from resumed transcript replay.
     replay_seeded_history: Vec<HistoryEntry>,
 
-    /// Cache of persistent history entries fetched on-demand (text-only).
-    fetched_history: HashMap<usize, HistoryEntry>,
-    /// Persistent offsets covered by a batch but containing no valid entry.
-    fetched_history_misses: HashSet<usize>,
+    /// Persistent offsets fetched on demand, with `None` for malformed batch rows.
+    fetched_history: HashMap<usize, Option<HistoryEntry>>,
 
     /// Current cursor within the combined (persistent + local) history. `None`
     /// indicates the user is *not* currently browsing history.
@@ -196,7 +194,8 @@ pub(crate) enum HistoryEntryResponse {
 /// continue scanning, while `selected_match_index` points into `unique_matches` so already
 /// discovered unique results can be revisited without rescanning duplicate offsets. `seen_texts`
 /// intentionally keys on exact prompt text because the UI previews and accepts text, not the
-/// storage identity of each historical record.
+/// storage identity of each historical record. `next_older_cursor` retains the query-independent
+/// batch boundary so a match does not force the next Older search back onto the prefix-scan path.
 #[derive(Clone, Debug)]
 struct HistorySearchState {
     query: String,
@@ -256,7 +255,6 @@ impl ChatComposerHistory {
             local_history: Vec::new(),
             replay_seeded_history: Vec::new(),
             fetched_history: HashMap::new(),
-            fetched_history_misses: HashSet::new(),
             history_cursor: None,
             pending_navigation_direction: None,
             last_history_text: None,
@@ -271,7 +269,6 @@ impl ChatComposerHistory {
         }
         self.at_mention_restore_enabled = enabled;
         self.fetched_history.clear();
-        self.fetched_history_misses.clear();
         self.history_cursor = None;
         self.last_history_text = None;
         self.search = None;
@@ -287,7 +284,6 @@ impl ChatComposerHistory {
         self.persistent_log_id = Some(log_id);
         self.persistent_entry_count = entry_count;
         self.fetched_history.clear();
-        self.fetched_history_misses.clear();
         self.local_history.clear();
         self.replay_seeded_history.clear();
         self.history_cursor = None;
@@ -470,7 +466,7 @@ impl ChatComposerHistory {
             HistoryEntry::new_with_at_mentions(entry, self.at_mention_restore_enabled)
         });
         if let Some(entry) = entry.clone() {
-            self.fetched_history.insert(offset, entry);
+            self.fetched_history.insert(offset, Some(entry));
         }
 
         if self
@@ -698,7 +694,7 @@ impl ChatComposerHistory {
                 if self.search_matches(&entry) && self.search_result_is_unique(&entry) {
                     return self.search_match(offset, entry);
                 }
-            } else if !self.fetched_history_misses.contains(&offset)
+            } else if !self.fetched_history.contains_key(&offset)
                 && offset < self.persistent_entry_count
             {
                 if direction == HistorySearchDirection::Older
@@ -752,7 +748,7 @@ impl ChatComposerHistory {
                 .get(offset - self.persistent_entry_count)
                 .cloned()
         } else {
-            self.fetched_history.get(&offset).cloned()
+            self.fetched_history.get(&offset).cloned().flatten()
         }
     }
 
@@ -964,6 +960,13 @@ mod tests {
     fn test_thread_id() -> ThreadId {
         ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")
             .expect("thread id should parse")
+    }
+
+    fn batch_entry(offset: usize, entry: &str) -> HistoryBatchEntryResponse {
+        HistoryBatchEntryResponse {
+            offset,
+            entry: Some(entry.to_string()),
+        }
     }
 
     #[test]
@@ -1322,10 +1325,7 @@ mod tests {
             history.on_batch_response(
                 /*log_id*/ 1,
                 cursor,
-                vec![HistoryBatchEntryResponse {
-                    offset: 0,
-                    entry: Some("also not a match".into()),
-                }],
+                vec![batch_entry(0, "also not a match")],
                 /*next_older_cursor*/ None,
                 &tx,
             )
@@ -1402,10 +1402,7 @@ mod tests {
             history.on_batch_response(
                 /*log_id*/ 1,
                 cursor,
-                vec![HistoryBatchEntryResponse {
-                    offset: 1,
-                    entry: Some("OLDER command".into()),
-                }],
+                vec![batch_entry(1, "OLDER command")],
                 Some(HistoryBatchCursor::new(0)),
                 &tx
             )
@@ -1475,14 +1472,8 @@ mod tests {
                 /*log_id*/ 1,
                 cursor,
                 vec![
-                    HistoryBatchEntryResponse {
-                        offset: 1,
-                        entry: Some("not a match".into()),
-                    },
-                    HistoryBatchEntryResponse {
-                        offset: 0,
-                        entry: Some("needle older".into()),
-                    },
+                    batch_entry(1, "not a match"),
+                    batch_entry(0, "needle older"),
                 ],
                 /*next_older_cursor*/ None,
                 &tx,
@@ -1545,10 +1536,10 @@ mod tests {
         history.set_metadata(test_thread_id(), /*log_id*/ 1, /*entry_count*/ 3);
         history
             .fetched_history
-            .insert(1, HistoryEntry::new("command2".to_string()));
+            .insert(1, Some(HistoryEntry::new("command2".to_string())));
         history
             .fetched_history
-            .insert(2, HistoryEntry::new("command3".to_string()));
+            .insert(2, Some(HistoryEntry::new("command3".to_string())));
 
         assert_eq!(
             Some(HistoryEntry::new("command3".to_string())),

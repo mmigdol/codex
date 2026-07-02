@@ -1,13 +1,12 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
-use std::path::Path;
 use std::time::SystemTime;
-
-use memchr::memchr_iter;
 
 use super::HISTORY_READ_BUFFER_SIZE;
 use super::HistoryConfig;
@@ -28,8 +27,7 @@ const MAX_BATCH_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HistoryBatchCursor {
     end_offset: usize,
-    byte_position: Option<u64>,
-    observed_revision: Option<HistoryFileRevision>,
+    byte_anchor: Option<HistoryByteAnchor>,
 }
 
 impl HistoryBatchCursor {
@@ -37,8 +35,7 @@ impl HistoryBatchCursor {
     pub fn new(end_offset: usize) -> Self {
         Self {
             end_offset,
-            byte_position: None,
-            observed_revision: None,
+            byte_anchor: None,
         }
     }
 
@@ -49,40 +46,25 @@ impl HistoryBatchCursor {
 
     /// Returns the byte position used to continue an older lookup without a prefix rescan.
     pub fn byte_position(self) -> Option<u64> {
-        self.byte_position
-    }
-
-    fn anchored(
-        end_offset: usize,
-        byte_position: u64,
-        observed_revision: HistoryFileRevision,
-    ) -> Self {
-        Self {
-            end_offset,
-            byte_position: Some(byte_position),
-            observed_revision: Some(observed_revision),
-        }
+        self.byte_anchor.map(|anchor| anchor.position)
     }
 }
 
+/// Validated row boundary used to continue scanning one unchanged file revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HistoryByteAnchor {
+    position: u64,
+    revision: HistoryFileRevision,
+}
+
+/// File metadata that must remain unchanged before a byte position can be reused.
+///
+/// A length alone cannot detect an in-place trim followed by an append, so cursors also retain the
+/// modification time. Filesystems without a modification time always fall back to an offset scan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HistoryFileRevision {
     len: u64,
     modified: Option<SystemTime>,
-}
-
-impl HistoryFileRevision {
-    fn read(file: &File) -> std::io::Result<Self> {
-        let metadata = file.metadata()?;
-        Ok(Self {
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-        })
-    }
-
-    fn matches(self, other: Self) -> bool {
-        self.modified.is_some() && self == other
-    }
 }
 
 /// One absolute history offset covered by a bounded lookup.
@@ -132,14 +114,6 @@ pub fn lookup_batch(
     config: &HistoryConfig,
 ) -> std::io::Result<HistoryBatch> {
     let path = history_filepath(config);
-    lookup_batch_from_file(&path, log_id, cursor)
-}
-
-fn lookup_batch_from_file(
-    path: &Path,
-    log_id: u64,
-    cursor: HistoryBatchCursor,
-) -> std::io::Result<HistoryBatch> {
     let mut file = OpenOptions::new().read(true).open(path)?;
     let current_log_id = log_identity(&file.metadata()?).unwrap_or(0);
     if log_id != 0 && current_log_id != log_id {
@@ -160,20 +134,30 @@ fn lookup_batch_from_file(
     ))
 }
 
+/// Selects the anchored backward scan only when the file revision is unchanged.
+///
+/// Falling back to the forward scan preserves absolute row semantics after concurrent appends,
+/// trims, or rewrites, at the cost of rescanning that one request from the beginning.
 fn scan_batch(file: &mut File, cursor: HistoryBatchCursor) -> std::io::Result<HistoryBatch> {
-    let revision = HistoryFileRevision::read(file)?;
-    if let (Some(byte_position), Some(observed_revision)) =
-        (cursor.byte_position, cursor.observed_revision)
-        && byte_position <= revision.len
-        && observed_revision.matches(revision)
+    let metadata = file.metadata()?;
+    let revision = HistoryFileRevision {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    };
+    if let Some(anchor) = cursor.byte_anchor
+        && anchor.revision == revision
     {
-        return scan_batch_backward(file, cursor.end_offset, byte_position, revision);
+        return scan_batch_backward(file, cursor.end_offset, anchor.position, revision);
     }
 
     file.seek(SeekFrom::Start(0))?;
     scan_batch_forward(file, cursor.end_offset, revision)
 }
 
+/// Streams from byte zero through `end_offset`, retaining only the bounded newest suffix.
+///
+/// This path establishes byte positions for later continuation cursors and is also the safe
+/// fallback when an existing cursor belongs to an older file revision.
 fn scan_batch_forward(
     file: &mut File,
     end_offset: usize,
@@ -181,51 +165,25 @@ fn scan_batch_forward(
 ) -> std::io::Result<HistoryBatch> {
     let mut suffix = VecDeque::new();
     let mut suffix_bytes = 0usize;
-    let mut pending = Vec::new();
-    let mut read_buffer = [0u8; HISTORY_READ_BUFFER_SIZE];
-    let mut offset = 0usize;
     let mut byte_position = 0u64;
+    let mut reader = BufReader::with_capacity(HISTORY_READ_BUFFER_SIZE, file);
 
-    loop {
-        let read = file.read(&mut read_buffer)?;
+    for offset in 0..=end_offset {
+        let mut bytes = Vec::new();
+        let read = reader.read_until(b'\n', &mut bytes)?;
         if read == 0 {
-            if !pending.is_empty() && offset <= end_offset {
-                retain_row(
-                    &mut suffix,
-                    &mut suffix_bytes,
-                    offset,
-                    byte_position,
-                    pending,
-                );
-            }
-            return Ok(finish_forward_batch(suffix, revision));
+            break;
         }
-
-        let chunk = &read_buffer[..read];
-        let chunk_start = file.stream_position()? - read as u64;
-        let mut row_start = 0;
-        for newline in memchr_iter(b'\n', chunk) {
-            pending.extend_from_slice(&chunk[row_start..=newline]);
-            if offset <= end_offset {
-                retain_row(
-                    &mut suffix,
-                    &mut suffix_bytes,
-                    offset,
-                    byte_position,
-                    std::mem::take(&mut pending),
-                );
-            }
-            if offset == end_offset {
-                return Ok(finish_forward_batch(suffix, revision));
-            }
-            offset = offset.saturating_add(1);
-            row_start = newline + 1;
-            byte_position = chunk_start + row_start as u64;
-        }
-        pending.extend_from_slice(&chunk[row_start..]);
+        retain_row(&mut suffix, &mut suffix_bytes, offset, byte_position, bytes);
+        byte_position += read as u64;
     }
+    Ok(finish_batch(suffix.into_iter().rev().collect(), revision))
 }
 
+/// Reads complete rows backward from a validated exclusive byte boundary.
+///
+/// `end_byte_position` must be the start of the row immediately newer than `end_offset`. Scanning
+/// in reverse lets each continuation touch only its own rows while preserving absolute offsets.
 fn scan_batch_backward(
     file: &mut File,
     end_offset: usize,
@@ -284,6 +242,10 @@ fn scan_batch_backward(
     Ok(finish_batch(entries, revision))
 }
 
+/// Retains the newest suffix seen by a forward scan under both row and byte caps.
+///
+/// A single oversized row replaces the suffix so the newest requested record is always returned
+/// and callers can continue to an older cursor.
 fn retain_row(
     suffix: &mut VecDeque<RawHistoryBatchEntry>,
     suffix_bytes: &mut usize,
@@ -316,6 +278,10 @@ fn retain_row(
     }
 }
 
+/// Appends one newest-to-oldest row and reports whether the backward scan should continue.
+///
+/// Returning `false` means the batch is complete. An oversized first row is retained alone;
+/// otherwise the row that would exceed a cap is left for the next batch.
 fn retain_newest_row(
     entries: &mut Vec<RawHistoryBatchEntry>,
     entries_bytes: &mut usize,
@@ -335,18 +301,19 @@ fn retain_newest_row(
     true
 }
 
-fn finish_forward_batch(
-    suffix: VecDeque<RawHistoryBatchEntry>,
-    revision: HistoryFileRevision,
-) -> HistoryBatch {
-    finish_batch(suffix.into_iter().rev().collect(), revision)
-}
-
+/// Parses newest-first rows and anchors the continuation at the oldest retained row's start.
 fn finish_batch(entries: Vec<RawHistoryBatchEntry>, revision: HistoryFileRevision) -> HistoryBatch {
     let next_older_cursor = entries.last().and_then(|entry| {
-        entry.offset.checked_sub(1).map(|end_offset| {
-            HistoryBatchCursor::anchored(end_offset, entry.byte_position, revision)
-        })
+        entry
+            .offset
+            .checked_sub(1)
+            .map(|end_offset| HistoryBatchCursor {
+                end_offset,
+                byte_anchor: revision.modified.map(|_| HistoryByteAnchor {
+                    position: entry.byte_position,
+                    revision,
+                }),
+            })
     });
     let entries = entries
         .into_iter()

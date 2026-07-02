@@ -327,25 +327,17 @@ impl ChatComposer {
                     search.status = HistorySearchStatus::Match;
                 }
             }
-            HistorySearchResult::NotFound => {
+            result @ (HistorySearchResult::NotFound | HistorySearchResult::Unavailable) => {
                 let original_draft = self
                     .history_search
                     .as_ref()
                     .map(|search| search.original_draft.clone());
                 if let Some(search) = self.history_search.as_mut() {
-                    search.status = HistorySearchStatus::NoMatch;
-                }
-                if let Some(original_draft) = original_draft {
-                    self.restore_draft(original_draft);
-                }
-            }
-            HistorySearchResult::Unavailable => {
-                let original_draft = self
-                    .history_search
-                    .as_ref()
-                    .map(|search| search.original_draft.clone());
-                if let Some(search) = self.history_search.as_mut() {
-                    search.status = HistorySearchStatus::Idle;
+                    search.status = if matches!(result, HistorySearchResult::NotFound) {
+                        HistorySearchStatus::NoMatch
+                    } else {
+                        HistorySearchStatus::Idle
+                    };
                 }
                 if let Some(original_draft) = original_draft {
                     self.restore_draft(original_draft);
