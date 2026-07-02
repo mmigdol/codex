@@ -206,6 +206,7 @@ struct HistorySearchState {
     selected_match_index: Option<usize>,
     seen_texts: HashSet<String>,
     awaiting: Option<PendingHistorySearch>,
+    next_older_cursor: Option<HistoryBatchCursor>,
     exhausted_older: bool,
     exhausted_newer: bool,
 }
@@ -699,21 +700,35 @@ impl ChatComposerHistory {
                 }
             } else if !self.fetched_history_misses.contains(&offset)
                 && offset < self.persistent_entry_count
-                && let (Some(thread_id), Some(log_id)) = (self.thread_id, self.persistent_log_id)
             {
-                if let Some(search) = self.search.as_mut() {
-                    search.awaiting = Some(PendingHistorySearch::Entry {
-                        offset,
-                        direction,
+                if direction == HistorySearchDirection::Older
+                    && let Some(cursor) = self
+                        .search
+                        .as_ref()
+                        .and_then(|search| search.next_older_cursor)
+                    && cursor.end_offset() == offset
+                {
+                    return self.request_older_search_batch(
+                        cursor,
                         boundary_if_exhausted,
-                    });
+                        app_event_tx,
+                    );
                 }
-                app_event_tx.send(AppEvent::LookupMessageHistoryEntry {
-                    thread_id,
-                    offset,
-                    log_id,
-                });
-                return HistorySearchResult::Pending;
+                if let (Some(thread_id), Some(log_id)) = (self.thread_id, self.persistent_log_id) {
+                    if let Some(search) = self.search.as_mut() {
+                        search.awaiting = Some(PendingHistorySearch::Entry {
+                            offset,
+                            direction,
+                            boundary_if_exhausted,
+                        });
+                    }
+                    app_event_tx.send(AppEvent::LookupMessageHistoryEntry {
+                        thread_id,
+                        offset,
+                        log_id,
+                    });
+                    return HistorySearchResult::Pending;
+                }
             }
 
             let next_offset = match direction {
@@ -882,6 +897,7 @@ impl HistorySearchState {
             selected_match_index: None,
             seen_texts: HashSet::new(),
             awaiting: None,
+            next_older_cursor: None,
             exhausted_older: false,
             exhausted_newer: false,
         }

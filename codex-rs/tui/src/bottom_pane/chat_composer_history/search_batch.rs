@@ -50,6 +50,9 @@ impl ChatComposerHistory {
         if awaited_cursor != cursor {
             return None;
         }
+        if let Some(search) = self.search.as_mut() {
+            search.next_older_cursor = next_older_cursor;
+        }
 
         for (offset, entry) in entries {
             if let Some(entry) = entry
@@ -176,7 +179,7 @@ impl ChatComposerHistory {
         }
     }
 
-    fn request_older_search_batch(
+    pub(super) fn request_older_search_batch(
         &mut self,
         cursor: codex_message_history::HistoryBatchCursor,
         boundary_if_exhausted: bool,

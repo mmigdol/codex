@@ -180,6 +180,62 @@ fn search_batch_read_failure_stops_after_bounded_retries() {
 }
 
 #[test]
+fn search_batch_match_preserves_cursor_for_next_older_search() {
+    let (mut history, tx, mut rx) = history(7);
+    let cursor = start_older_search(&mut history, &tx, &mut rx, "needle", 6);
+    let continuation = HistoryBatchCursor::new(2);
+
+    assert_eq!(
+        history.on_batch_response(
+            42,
+            cursor,
+            vec![
+                batch_entry(5, Some("unrelated newer")),
+                batch_entry(4, Some("needle first")),
+                batch_entry(3, Some("unrelated older")),
+            ],
+            Some(continuation),
+            &tx,
+        ),
+        Some(HistorySearchResult::Found(HistoryEntry::new(
+            "needle first".to_string()
+        )))
+    );
+
+    assert_eq!(
+        history.search(
+            "needle",
+            HistorySearchDirection::Older,
+            /*restart*/ false,
+            &tx,
+        ),
+        HistorySearchResult::Pending
+    );
+    let AppEvent::LookupMessageHistoryBatch {
+        cursor: requested_cursor,
+        ..
+    } = rx.try_recv().expect("continuation batch request")
+    else {
+        panic!("expected continuation batch request");
+    };
+    assert_eq!(requested_cursor, continuation);
+    assert!(rx.try_recv().is_err());
+
+    assert_eq!(
+        history.on_batch_response(
+            42,
+            continuation,
+            vec![batch_entry(2, Some("needle second"))],
+            None,
+            &tx,
+        ),
+        Some(HistorySearchResult::Found(HistoryEntry::new(
+            "needle second".to_string()
+        )))
+    );
+}
+
+#[test]
 fn search_batch_absent_1024_uses_one_single_and_eight_batches() {
     let (mut history, tx, mut rx) = history(1_024);
     let mut cursor = start_older_search(&mut history, &tx, &mut rx, "absent", 1_023);
