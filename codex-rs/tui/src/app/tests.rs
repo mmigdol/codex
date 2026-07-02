@@ -480,7 +480,7 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
             cursor,
             log_id: 1,
             entries: Vec::new(),
-            next_older_cursor: None,
+            next_older_cursor: Some(cursor),
         }
     );
 

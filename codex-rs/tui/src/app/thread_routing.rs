@@ -533,7 +533,10 @@ impl App {
             .await
             .unwrap_or_else(|err| {
                 tracing::warn!(error = %err, "history batch lookup task failed");
-                codex_message_history::HistoryBatch::default()
+                codex_message_history::HistoryBatch {
+                    entries: Vec::new(),
+                    next_older_cursor: Some(cursor),
+                }
             });
             let entries = batch
                 .entries

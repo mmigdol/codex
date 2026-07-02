@@ -107,7 +107,10 @@ pub fn lookup_batch(
         Ok(batch) => batch,
         Err(error) => {
             tracing::warn!(%error, "failed to read history batch");
-            HistoryBatch::default()
+            HistoryBatch {
+                entries: Vec::new(),
+                next_older_cursor: Some(cursor),
+            }
         }
     }
 }

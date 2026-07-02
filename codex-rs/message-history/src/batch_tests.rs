@@ -192,3 +192,18 @@ async fn search_batch_enforces_byte_cap_and_oversized_row_progress() {
     assert_eq!(next.entries[0].entry, Some(entries[0].clone()));
     assert_eq!(next.next_older_cursor, None);
 }
+
+#[test]
+fn search_batch_preserves_cursor_on_read_failure() {
+    let home = TempDir::new().expect("temp dir");
+    let config = HistoryConfig::new(home.path(), &History::default());
+    let cursor = HistoryBatchCursor::new(7);
+
+    assert_eq!(
+        lookup_batch(/*log_id*/ 1, cursor, &config),
+        HistoryBatch {
+            entries: Vec::new(),
+            next_older_cursor: Some(cursor),
+        }
+    );
+}
