@@ -14,6 +14,8 @@ use crate::session::CodexSpawnArgs;
 use crate::session::CodexSpawnOk;
 use crate::session::INITIAL_SUBMIT_ID;
 use crate::session::resolve_multi_agent_version;
+use crate::skills::InAppBrowserSkillAvailability;
+use crate::skills::SkillsServiceOptions;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
 use codex_agent_graph_store::AgentGraphStore;
@@ -318,6 +320,11 @@ impl ThreadManager {
     ) -> Self {
         let codex_home = config.codex_home.clone();
         let restriction_product = session_source.restriction_product();
+        let in_app_browser_skill_availability = if matches!(&session_source, SessionSource::Cli) {
+            InAppBrowserSkillAvailability::Unavailable
+        } else {
+            InAppBrowserSkillAvailability::Available
+        };
         let (thread_created_tx, _) = broadcast::channel(THREAD_CREATED_CHANNEL_CAPACITY);
         let plugins_manager = Arc::new(PluginsManager::new_with_options(
             codex_home.to_path_buf(),
@@ -328,10 +335,13 @@ impl ThreadManager {
             Arc::clone(&plugins_manager),
             Arc::clone(&extensions),
         ));
-        let skills_service = Arc::new(SkillsService::new_with_restriction_product(
+        let skills_service = Arc::new(SkillsService::new_with_options(
             codex_home,
             config.bundled_skills_enabled(),
-            restriction_product,
+            SkillsServiceOptions {
+                restriction_product,
+                in_app_browser_skill_availability,
+            },
         ));
         Self {
             state: Arc::new(ThreadManagerState {

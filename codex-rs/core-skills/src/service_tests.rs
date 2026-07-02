@@ -403,6 +403,55 @@ async fn skills_for_config_disables_plugin_skills_by_name() {
 }
 
 #[tokio::test]
+async fn skills_for_config_filters_in_app_browser_skill_when_unavailable() {
+    let codex_home = tempfile::tempdir().expect("tempdir");
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let browser_skill_path = write_plugin_skill(
+        &codex_home,
+        "openai-bundled",
+        "browser",
+        "control-in-app-browser",
+        "control-in-app-browser",
+        "control the in-app browser",
+    );
+    write_plugin_skill(
+        &codex_home,
+        "openai-bundled",
+        "browser",
+        "browser-docs",
+        "browser-docs",
+        "browser docs",
+    );
+    let config_layer_stack = config_stack(&codex_home, "");
+    let plugin_skill_root =
+        plugin_skill_root_for_skill_path(&browser_skill_path, "browser@openai-bundled", "browser");
+    let skills_service = SkillsService::new_with_options(
+        codex_home.path().abs(),
+        /*bundled_skills_enabled*/ true,
+        SkillsServiceOptions {
+            restriction_product: Some(Product::Codex),
+            in_app_browser_skill_availability: InAppBrowserSkillAvailability::Unavailable,
+        },
+    );
+
+    let outcome = skills_for_config_with_stack(
+        &skills_service,
+        &cwd,
+        &config_layer_stack,
+        &[plugin_skill_root],
+    )
+    .await;
+    let loaded_names = outcome
+        .skills
+        .iter()
+        .map(|skill| skill.name.as_str())
+        .collect::<HashSet<_>>();
+
+    assert!(!loaded_names.contains("browser:control-in-app-browser"));
+    assert!(loaded_names.contains("browser:browser-docs"));
+}
+
+#[tokio::test]
 async fn skills_for_cwd_loads_repo_and_user_roots_with_local_fs() {
     let codex_home = tempfile::tempdir().expect("tempdir");
     let cwd = tempfile::tempdir().expect("tempdir");

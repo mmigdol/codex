@@ -23,6 +23,7 @@ use crate::config_rules::skill_config_rules_from_stack;
 use crate::loader::SkillRoot;
 use crate::loader::load_skills_from_roots;
 use crate::loader::skill_roots;
+use crate::model::InAppBrowserSkillAvailability;
 use crate::system::install_system_skills;
 use crate::system::uninstall_system_skills;
 use codex_config::SkillsConfig;
@@ -67,15 +68,34 @@ impl SkillsLoadInput {
 /// Source-specific model exposure remains the responsibility of the skills extension.
 pub struct SkillsService {
     codex_home: AbsolutePathBuf,
-    restriction_product: Option<Product>,
+    options: SkillsServiceOptions,
     extra_roots: RwLock<Vec<AbsolutePathBuf>>,
     cache_by_cwd: RwLock<HashMap<AbsolutePathBuf, HostSkillsSnapshot>>,
     cache_by_config: RwLock<HashMap<ConfigSkillsCacheKey, HostSkillsSnapshot>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillsServiceOptions {
+    pub restriction_product: Option<Product>,
+    pub in_app_browser_skill_availability: InAppBrowserSkillAvailability,
+}
+
+impl Default for SkillsServiceOptions {
+    fn default() -> Self {
+        Self {
+            restriction_product: Some(Product::Codex),
+            in_app_browser_skill_availability: InAppBrowserSkillAvailability::Available,
+        }
+    }
+}
+
 impl SkillsService {
     pub fn new(codex_home: AbsolutePathBuf, bundled_skills_enabled: bool) -> Self {
-        Self::new_with_restriction_product(codex_home, bundled_skills_enabled, Some(Product::Codex))
+        Self::new_with_options(
+            codex_home,
+            bundled_skills_enabled,
+            SkillsServiceOptions::default(),
+        )
     }
 
     pub fn new_with_restriction_product(
@@ -83,9 +103,24 @@ impl SkillsService {
         bundled_skills_enabled: bool,
         restriction_product: Option<Product>,
     ) -> Self {
+        Self::new_with_options(
+            codex_home,
+            bundled_skills_enabled,
+            SkillsServiceOptions {
+                restriction_product,
+                ..SkillsServiceOptions::default()
+            },
+        )
+    }
+
+    pub fn new_with_options(
+        codex_home: AbsolutePathBuf,
+        bundled_skills_enabled: bool,
+        options: SkillsServiceOptions,
+    ) -> Self {
         let service = Self {
             codex_home,
-            restriction_product,
+            options,
             extra_roots: RwLock::new(Vec::new()),
             cache_by_cwd: RwLock::new(HashMap::new()),
             cache_by_config: RwLock::new(HashMap::new()),
@@ -215,7 +250,11 @@ impl SkillsService {
     ) -> SkillLoadOutcome {
         let outcome = load_skills_from_roots(roots, input.plugin_skill_snapshots.as_ref()).await;
         let outcome =
-            crate::filter_skill_load_outcome_for_product(outcome, self.restriction_product);
+            crate::filter_skill_load_outcome_for_product(outcome, self.options.restriction_product);
+        let outcome = crate::model::filter_skill_load_outcome_for_in_app_browser_skill_availability(
+            outcome,
+            self.options.in_app_browser_skill_availability,
+        );
         let disabled_paths = resolve_disabled_skill_paths(&outcome.skills, skill_config_rules);
         finalize_skill_outcome(outcome, disabled_paths)
     }

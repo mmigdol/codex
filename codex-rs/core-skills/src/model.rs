@@ -11,6 +11,8 @@ use codex_protocol::protocol::SkillScope;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 
+const IN_APP_BROWSER_PLUGIN_SKILL_NAME: &str = "browser:control-in-app-browser";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillMetadata {
     pub name: String,
@@ -47,6 +49,12 @@ impl SkillMetadata {
             None => true,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InAppBrowserSkillAvailability {
+    Available,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -194,12 +202,31 @@ impl fmt::Debug for SkillFileSystemsByPath {
 }
 
 pub fn filter_skill_load_outcome_for_product(
-    mut outcome: SkillLoadOutcome,
+    outcome: SkillLoadOutcome,
     restriction_product: Option<Product>,
 ) -> SkillLoadOutcome {
-    outcome
-        .skills
-        .retain(|skill| skill.matches_product_restriction_for_product(restriction_product));
+    filter_skill_load_outcome(outcome, |skill| {
+        skill.matches_product_restriction_for_product(restriction_product)
+    })
+}
+
+pub fn filter_skill_load_outcome_for_in_app_browser_skill_availability(
+    outcome: SkillLoadOutcome,
+    availability: InAppBrowserSkillAvailability,
+) -> SkillLoadOutcome {
+    match availability {
+        InAppBrowserSkillAvailability::Available => outcome,
+        InAppBrowserSkillAvailability::Unavailable => filter_skill_load_outcome(outcome, |skill| {
+            skill.name != IN_APP_BROWSER_PLUGIN_SKILL_NAME
+        }),
+    }
+}
+
+fn filter_skill_load_outcome(
+    mut outcome: SkillLoadOutcome,
+    mut retain_skill: impl FnMut(&SkillMetadata) -> bool,
+) -> SkillLoadOutcome {
+    outcome.skills.retain(&mut retain_skill);
     let retained_paths: HashSet<AbsolutePathBuf> = outcome
         .skills
         .iter()
@@ -225,7 +252,7 @@ pub fn filter_skill_load_outcome_for_product(
         outcome
             .implicit_skills_by_scripts_dir
             .iter()
-            .filter(|(_, skill)| skill.matches_product_restriction_for_product(restriction_product))
+            .filter(|(_, skill)| retained_paths.contains(&skill.path_to_skills_md))
             .map(|(path, skill)| (path.clone(), skill.clone()))
             .collect(),
     );
@@ -233,7 +260,7 @@ pub fn filter_skill_load_outcome_for_product(
         outcome
             .implicit_skills_by_doc_path
             .iter()
-            .filter(|(_, skill)| skill.matches_product_restriction_for_product(restriction_product))
+            .filter(|(_, skill)| retained_paths.contains(&skill.path_to_skills_md))
             .map(|(path, skill)| (path.clone(), skill.clone()))
             .collect(),
     );
