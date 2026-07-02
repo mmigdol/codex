@@ -527,35 +527,38 @@ impl App {
         );
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let batch = tokio::task::spawn_blocking(move || {
+            let batch_result = tokio::task::spawn_blocking(move || {
                 codex_message_history::lookup_batch(log_id, cursor, &history_config)
             })
-            .await
-            .unwrap_or_else(|err| {
-                tracing::warn!(error = %err, "history batch lookup task failed");
-                codex_message_history::HistoryBatch {
-                    entries: Vec::new(),
-                    next_older_cursor: Some(cursor),
+            .await;
+            let event = match batch_result {
+                Ok(Ok(batch)) => {
+                    let entries = batch
+                        .entries
+                        .into_iter()
+                        .map(|entry| crate::app_event::HistoryBatchEntryResponse {
+                            offset: entry.offset,
+                            entry: entry.entry.map(|entry| entry.text),
+                        })
+                        .collect();
+                    HistoryLookupResponse::Batch {
+                        cursor,
+                        log_id,
+                        entries,
+                        next_older_cursor: batch.next_older_cursor,
+                    }
                 }
-            });
-            let entries = batch
-                .entries
-                .into_iter()
-                .map(|entry| crate::app_event::HistoryBatchEntryResponse {
-                    offset: entry.offset,
-                    entry: entry.entry.map(|entry| entry.text),
-                })
-                .collect();
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, "history batch lookup failed");
+                    HistoryLookupResponse::BatchError { cursor, log_id }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "history batch lookup task failed");
+                    HistoryLookupResponse::BatchError { cursor, log_id }
+                }
+            };
 
-            app_event_tx.send(AppEvent::ThreadHistoryEntryResponse {
-                thread_id,
-                event: HistoryLookupResponse::Batch {
-                    cursor,
-                    log_id,
-                    entries,
-                    next_older_cursor: batch.next_older_cursor,
-                },
-            });
+            app_event_tx.send(AppEvent::ThreadHistoryEntryResponse { thread_id, event });
         });
         Ok(())
     }

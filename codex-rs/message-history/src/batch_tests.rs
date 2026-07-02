@@ -32,7 +32,8 @@ async fn batch_for(entries: &[HistoryEntry], end_offset: usize) -> (TempDir, His
     let home = TempDir::new().expect("temp dir");
     let config = write_entries(&home, entries);
     let (log_id, _) = history_metadata(&config).await;
-    let batch = lookup_batch(log_id, HistoryBatchCursor::new(end_offset), &config);
+    let batch = lookup_batch(log_id, HistoryBatchCursor::new(end_offset), &config)
+        .expect("read history batch");
     (home, batch)
 }
 
@@ -63,7 +64,7 @@ async fn search_batch_returns_bounded_newest_first_absolute_offsets() {
     let mut offsets: Vec<_> = batch.entries.iter().map(|entry| entry.offset).collect();
     let mut cursor = Some(next_cursor);
     while let Some(next_cursor) = cursor {
-        let older = lookup_batch(log_id, next_cursor, &config);
+        let older = lookup_batch(log_id, next_cursor, &config).expect("read older history batch");
         offsets.extend(older.entries.iter().map(|entry| entry.offset));
         cursor = older.next_older_cursor;
     }
@@ -85,7 +86,7 @@ async fn search_batch_stitches_chunks_and_keeps_malformed_offsets() {
     let (log_id, _) = history_metadata(&config).await;
 
     assert_eq!(
-        lookup_batch(log_id, HistoryBatchCursor::new(2), &config),
+        lookup_batch(log_id, HistoryBatchCursor::new(2), &config).expect("read history batch"),
         HistoryBatch {
             entries: vec![
                 HistoryBatchEntry {
@@ -113,7 +114,8 @@ async fn search_batch_preserves_identity_append_trim_and_short_file_semantics() 
     let config = write_entries(&home, &initial);
     let (log_id, _) = history_metadata(&config).await;
     assert_eq!(
-        lookup_batch(log_id.wrapping_add(1), HistoryBatchCursor::new(1), &config),
+        lookup_batch(log_id.wrapping_add(1), HistoryBatchCursor::new(1), &config)
+            .expect("read history batch"),
         HistoryBatch::default()
     );
 
@@ -127,7 +129,8 @@ async fn search_batch_preserves_identity_append_trim_and_short_file_semantics() 
         serde_json::to_string(&entry(2, "appended")).expect("serialize append")
     )
     .expect("append entry");
-    let batch = lookup_batch(log_id, HistoryBatchCursor::new(1), &config);
+    let batch =
+        lookup_batch(log_id, HistoryBatchCursor::new(1), &config).expect("read history batch");
     assert_eq!(
         batch.entries,
         vec![
@@ -151,7 +154,8 @@ async fn search_batch_preserves_identity_append_trim_and_short_file_semantics() 
     append_entry(&newest, "session", &trimmed_config)
         .await
         .expect("append and trim");
-    let trimmed = lookup_batch(log_id, HistoryBatchCursor::new(20), &trimmed_config);
+    let trimmed = lookup_batch(log_id, HistoryBatchCursor::new(20), &trimmed_config)
+        .expect("read trimmed history batch");
     assert_eq!(trimmed.entries.len(), 1);
     assert_eq!(trimmed.entries[0].offset, 0);
     assert_eq!(
@@ -188,7 +192,7 @@ async fn search_batch_enforces_byte_cap_and_oversized_row_progress() {
     assert_eq!(next_cursor.end_offset(), 0);
     let config = HistoryConfig::new(home.path(), &History::default());
     let (log_id, _) = history_metadata(&config).await;
-    let next = lookup_batch(log_id, next_cursor, &config);
+    let next = lookup_batch(log_id, next_cursor, &config).expect("read older history batch");
     assert_eq!(next.entries[0].entry, Some(entries[0].clone()));
     assert_eq!(next.next_older_cursor, None);
 }
@@ -199,11 +203,6 @@ fn search_batch_preserves_cursor_on_read_failure() {
     let config = HistoryConfig::new(home.path(), &History::default());
     let cursor = HistoryBatchCursor::new(7);
 
-    assert_eq!(
-        lookup_batch(/*log_id*/ 1, cursor, &config),
-        HistoryBatch {
-            entries: Vec::new(),
-            next_older_cursor: Some(cursor),
-        }
-    );
+    let error = lookup_batch(/*log_id*/ 1, cursor, &config).expect_err("history read should fail");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
 }

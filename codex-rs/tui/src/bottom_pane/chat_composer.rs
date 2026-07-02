@@ -867,6 +867,21 @@ impl ChatComposer {
         true
     }
 
+    pub(crate) fn on_history_batch_error(
+        &mut self,
+        log_id: u64,
+        cursor: codex_message_history::HistoryBatchCursor,
+    ) -> bool {
+        let Some(result) = self
+            .history
+            .on_batch_error(log_id, cursor, &self.app_event_tx)
+        else {
+            return false;
+        };
+        self.apply_history_search_result(result);
+        true
+    }
+
     pub(crate) fn record_replayed_user_message_history(&mut self, entry: HistoryEntry) {
         self.history.record_replayed_submission(entry);
     }

@@ -148,23 +148,35 @@ fn search_batch_rejects_stale_thread_and_log_metadata() {
 }
 
 #[test]
-fn search_batch_read_failure_retries_same_cursor() {
+fn search_batch_read_failure_stops_after_bounded_retries() {
     let (mut history, tx, mut rx) = history(5);
     let cursor = start_older_search(&mut history, &tx, &mut rx, "retry", 4);
 
+    for _ in 0..MAX_BATCH_READ_RETRIES {
+        assert_eq!(
+            history.on_batch_error(42, cursor, &tx),
+            Some(HistorySearchResult::Pending)
+        );
+        let AppEvent::LookupMessageHistoryBatch {
+            cursor: retry_cursor,
+            log_id,
+            ..
+        } = rx.try_recv().expect("retry batch request")
+        else {
+            panic!("expected bounded batch retry");
+        };
+        assert_eq!((retry_cursor, log_id), (cursor, 42));
+    }
+
     assert_eq!(
-        history.on_batch_response(42, cursor, Vec::new(), Some(cursor), &tx),
-        Some(HistorySearchResult::Pending)
+        history.on_batch_error(42, cursor, &tx),
+        Some(HistorySearchResult::Unavailable)
     );
-    let AppEvent::LookupMessageHistoryBatch {
-        cursor: retry_cursor,
-        log_id,
-        ..
-    } = rx.try_recv().expect("retry batch request")
-    else {
-        panic!("expected bounded batch retry");
-    };
-    assert_eq!((retry_cursor, log_id), (cursor, 42));
+    assert!(rx.try_recv().is_err());
+    assert_eq!(
+        history.search.as_ref().and_then(|search| search.awaiting),
+        None
+    );
 }
 
 #[test]

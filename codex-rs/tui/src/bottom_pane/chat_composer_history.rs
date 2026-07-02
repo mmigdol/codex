@@ -29,6 +29,8 @@ mod search_batch;
 #[path = "chat_composer_history/search_batch_tests.rs"]
 mod search_batch_tests;
 
+const MAX_BATCH_READ_RETRIES: u8 = 2;
+
 /// A composer history entry that can rehydrate draft state.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HistoryEntry {
@@ -166,13 +168,15 @@ pub(crate) enum HistorySearchDirection {
 /// `Pending` means a persistent entry lookup has been requested and the caller should keep the
 /// visible search session open until [`ChatComposerHistory::on_entry_response`] supplies the next
 /// result. `AtBoundary` means the current selected match is still valid but the requested direction
-/// has no further unique match; callers should avoid treating it like a query miss.
+/// has no further unique match; callers should avoid treating it like a query miss. `Unavailable`
+/// ends a failed lookup without claiming the query has no matching history.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum HistorySearchResult {
     Found(HistoryEntry),
     Pending,
     AtBoundary,
     NotFound,
+    Unavailable,
 }
 
 /// Result of integrating an asynchronous persistent history response.
@@ -233,6 +237,7 @@ enum PendingHistorySearch {
     Batch {
         cursor: HistoryBatchCursor,
         boundary_if_exhausted: bool,
+        read_failures: u8,
     },
 }
 

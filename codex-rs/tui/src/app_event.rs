@@ -87,6 +87,10 @@ pub(crate) enum HistoryLookupResponse {
         entries: Vec<HistoryBatchEntryResponse>,
         next_older_cursor: Option<HistoryBatchCursor>,
     },
+    BatchError {
+        cursor: HistoryBatchCursor,
+        log_id: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

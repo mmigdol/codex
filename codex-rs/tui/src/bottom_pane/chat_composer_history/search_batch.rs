@@ -2,6 +2,7 @@ use super::ChatComposerHistory;
 use super::HistoryEntry;
 use super::HistorySearchDirection;
 use super::HistorySearchResult;
+use super::MAX_BATCH_READ_RETRIES;
 use super::PendingHistorySearch;
 use crate::app_event::AppEvent;
 use crate::app_event::HistoryBatchEntryResponse;
@@ -41,6 +42,7 @@ impl ChatComposerHistory {
         let Some(PendingHistorySearch::Batch {
             cursor: awaited_cursor,
             boundary_if_exhausted,
+            ..
         }) = self.search.as_ref().and_then(|search| search.awaiting)
         else {
             return None;
@@ -68,6 +70,58 @@ impl ChatComposerHistory {
             self.exhausted_search_result(HistorySearchDirection::Older, boundary_if_exhausted)
         };
         Some(result)
+    }
+
+    /// Retries a failed batch lookup up to a fixed limit without treating the failure as history
+    /// exhaustion.
+    pub(crate) fn on_batch_error(
+        &mut self,
+        log_id: u64,
+        cursor: codex_message_history::HistoryBatchCursor,
+        app_event_tx: &AppEventSender,
+    ) -> Option<HistorySearchResult> {
+        if self.persistent_log_id != Some(log_id) {
+            return None;
+        }
+
+        let Some(PendingHistorySearch::Batch {
+            cursor: awaited_cursor,
+            boundary_if_exhausted,
+            read_failures,
+        }) = self.search.as_ref().and_then(|search| search.awaiting)
+        else {
+            return None;
+        };
+        if awaited_cursor != cursor {
+            return None;
+        }
+
+        if read_failures < MAX_BATCH_READ_RETRIES
+            && let Some(thread_id) = self.thread_id
+        {
+            if let Some(search) = self.search.as_mut() {
+                search.awaiting = Some(PendingHistorySearch::Batch {
+                    cursor,
+                    boundary_if_exhausted,
+                    read_failures: read_failures + 1,
+                });
+            }
+            app_event_tx.send(AppEvent::LookupMessageHistoryBatch {
+                thread_id,
+                cursor,
+                log_id,
+            });
+            return Some(HistorySearchResult::Pending);
+        }
+
+        if let Some(search) = self.search.as_mut() {
+            search.awaiting = None;
+        }
+        Some(if boundary_if_exhausted {
+            HistorySearchResult::AtBoundary
+        } else {
+            HistorySearchResult::Unavailable
+        })
     }
 
     /// Switches an older search from the single newest-entry probe to bounded batch lookups.
@@ -136,6 +190,7 @@ impl ChatComposerHistory {
             search.awaiting = Some(PendingHistorySearch::Batch {
                 cursor,
                 boundary_if_exhausted,
+                read_failures: 0,
             });
         }
         app_event_tx.send(AppEvent::LookupMessageHistoryBatch {

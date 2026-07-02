@@ -476,12 +476,7 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     assert_eq!(routed_thread_id, thread_id);
     assert_eq!(
         event,
-        HistoryLookupResponse::Batch {
-            cursor,
-            log_id: 1,
-            entries: Vec::new(),
-            next_older_cursor: Some(cursor),
-        }
+        HistoryLookupResponse::BatchError { cursor, log_id: 1 }
     );
 
     Ok(())

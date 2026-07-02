@@ -1631,6 +1631,9 @@ impl BottomPane {
                 self.composer
                     .on_history_batch_response(log_id, cursor, entries, next_older_cursor)
             }
+            HistoryLookupResponse::BatchError { cursor, log_id } => {
+                self.composer.on_history_batch_error(log_id, cursor)
+            }
         };
         if updated {
             self.composer.sync_popups();

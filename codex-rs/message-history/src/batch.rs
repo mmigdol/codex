@@ -97,22 +97,17 @@ struct RawHistoryBatchEntry {
 /// oldest offset on the initial lookup. Continuation lookups scan backward from the byte position
 /// returned with the previous batch. The result retains at most 128 rows and 64 KiB of raw JSONL,
 /// except that one oversized newest row is returned alone so callers always make progress.
+///
+/// # Errors
+///
+/// Returns an I/O error when the history file cannot be opened, inspected, locked, or read.
 pub fn lookup_batch(
     log_id: u64,
     cursor: HistoryBatchCursor,
     config: &HistoryConfig,
-) -> HistoryBatch {
+) -> std::io::Result<HistoryBatch> {
     let path = history_filepath(config);
-    match lookup_batch_from_file(&path, log_id, cursor) {
-        Ok(batch) => batch,
-        Err(error) => {
-            tracing::warn!(%error, "failed to read history batch");
-            HistoryBatch {
-                entries: Vec::new(),
-                next_older_cursor: Some(cursor),
-            }
-        }
-    }
+    lookup_batch_from_file(&path, log_id, cursor)
 }
 
 fn lookup_batch_from_file(
