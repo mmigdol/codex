@@ -38,7 +38,7 @@ fn start_older_search(
     rx: &mut UnboundedReceiver<AppEvent>,
     query: &str,
     newest_offset: usize,
-) -> usize {
+) -> HistoryBatchCursor {
     assert_eq!(
         history.search(
             query,
@@ -58,13 +58,13 @@ fn start_older_search(
         history.on_entry_response(log_id, offset, Some("unrelated entry".to_string()), tx),
         HistoryEntryResponse::Search(HistorySearchResult::Pending)
     );
-    let AppEvent::LookupMessageHistoryBatch { end_offset, .. } =
+    let AppEvent::LookupMessageHistoryBatch { cursor, .. } =
         rx.try_recv().expect("older batch request")
     else {
         panic!("expected bounded batch request");
     };
-    assert_eq!(end_offset, newest_offset - 1);
-    end_offset
+    assert_eq!(cursor.end_offset(), newest_offset - 1);
+    cursor
 }
 
 #[test]
@@ -75,9 +75,9 @@ fn search_batch_late_data_is_cache_only_after_cancel_or_query_edit() {
     assert_eq!(
         cancelled.on_batch_response(
             42,
-            3,
+            HistoryBatchCursor::new(3),
             vec![batch_entry(3, Some("cached match"))],
-            Some(2),
+            Some(HistoryBatchCursor::new(2)),
             &tx,
         ),
         None
@@ -111,7 +111,13 @@ fn search_batch_late_data_is_cache_only_after_cancel_or_query_edit() {
     };
     assert_eq!(offset, 3);
     assert_eq!(
-        edited.on_batch_response(42, 3, vec![batch_entry(3, Some("old data"))], Some(2), &tx),
+        edited.on_batch_response(
+            42,
+            HistoryBatchCursor::new(3),
+            vec![batch_entry(3, Some("old data"))],
+            Some(HistoryBatchCursor::new(2)),
+            &tx,
+        ),
         None
     );
     assert_eq!(
@@ -130,9 +136,9 @@ fn search_batch_rejects_stale_thread_and_log_metadata() {
     assert_eq!(
         history.on_batch_response(
             42,
-            3,
+            HistoryBatchCursor::new(3),
             vec![batch_entry(3, Some("stale match"))],
-            Some(2),
+            Some(HistoryBatchCursor::new(2)),
             &tx,
         ),
         None
@@ -144,37 +150,37 @@ fn search_batch_rejects_stale_thread_and_log_metadata() {
 #[test]
 fn search_batch_absent_1024_uses_one_single_and_eight_batches() {
     let (mut history, tx, mut rx) = history(1_024);
-    let mut end_offset = start_older_search(&mut history, &tx, &mut rx, "absent", 1_023);
+    let mut cursor = start_older_search(&mut history, &tx, &mut rx, "absent", 1_023);
     let mut batches = 0;
 
     loop {
+        let end_offset = cursor.end_offset();
         let start_offset = end_offset.saturating_sub(127);
         let entries = (start_offset..=end_offset)
             .rev()
             .map(|offset| batch_entry(offset, Some("unrelated entry")))
             .collect();
-        let next_older_offset = start_offset.checked_sub(1);
-        let expected = if next_older_offset.is_some() {
+        let next_older_cursor = start_offset.checked_sub(1).map(HistoryBatchCursor::new);
+        let expected = if next_older_cursor.is_some() {
             HistorySearchResult::Pending
         } else {
             HistorySearchResult::NotFound
         };
         assert_eq!(
-            history.on_batch_response(42, end_offset, entries, next_older_offset, &tx),
+            history.on_batch_response(42, cursor, entries, next_older_cursor, &tx),
             Some(expected)
         );
         batches += 1;
-        let Some(next_offset) = next_older_offset else {
+        let Some(expected_cursor) = next_older_cursor else {
             break;
         };
-        let AppEvent::LookupMessageHistoryBatch {
-            end_offset: next, ..
-        } = rx.try_recv().expect("next older batch")
+        let AppEvent::LookupMessageHistoryBatch { cursor: next, .. } =
+            rx.try_recv().expect("next older batch")
         else {
             panic!("expected bounded batch request");
         };
-        assert_eq!(next, next_offset);
-        end_offset = next;
+        assert_eq!(next, expected_cursor);
+        cursor = next;
     }
 
     assert_eq!((1 + batches, batches), (9, 8));

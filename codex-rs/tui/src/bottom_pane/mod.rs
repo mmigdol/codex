@@ -1623,16 +1623,14 @@ impl BottomPane {
                 .composer
                 .on_history_entry_response(log_id, offset, entry),
             HistoryLookupResponse::Batch {
-                end_offset,
+                cursor,
                 log_id,
                 entries,
-                next_older_offset,
-            } => self.composer.on_history_batch_response(
-                log_id,
-                end_offset,
-                entries,
-                next_older_offset,
-            ),
+                next_older_cursor,
+            } => {
+                self.composer
+                    .on_history_batch_response(log_id, cursor, entries, next_older_cursor)
+            }
         };
         if updated {
             self.composer.sync_popups();

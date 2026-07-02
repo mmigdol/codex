@@ -518,7 +518,7 @@ impl App {
     pub(super) async fn lookup_message_history_batch(
         &mut self,
         thread_id: ThreadId,
-        end_offset: usize,
+        cursor: codex_message_history::HistoryBatchCursor,
         log_id: u64,
     ) -> Result<()> {
         let history_config = codex_message_history::HistoryConfig::new(
@@ -528,7 +528,7 @@ impl App {
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             let batch = tokio::task::spawn_blocking(move || {
-                codex_message_history::lookup_batch(log_id, end_offset, &history_config)
+                codex_message_history::lookup_batch(log_id, cursor, &history_config)
             })
             .await
             .unwrap_or_else(|err| {
@@ -547,10 +547,10 @@ impl App {
             app_event_tx.send(AppEvent::ThreadHistoryEntryResponse {
                 thread_id,
                 event: HistoryLookupResponse::Batch {
-                    end_offset,
+                    cursor,
                     log_id,
                     entries,
-                    next_older_offset: batch.next_older_offset,
+                    next_older_cursor: batch.next_older_cursor,
                 },
             });
         });

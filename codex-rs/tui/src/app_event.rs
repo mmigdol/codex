@@ -30,6 +30,7 @@ use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_connectors::AppInfo;
 use codex_file_search::FileMatch;
+use codex_message_history::HistoryBatchCursor;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -81,10 +82,10 @@ pub(crate) enum HistoryLookupResponse {
         entry: Option<String>,
     },
     Batch {
-        end_offset: usize,
+        cursor: HistoryBatchCursor,
         log_id: u64,
         entries: Vec<HistoryBatchEntryResponse>,
-        next_older_offset: Option<usize>,
+        next_older_cursor: Option<HistoryBatchCursor>,
     },
 }
 
@@ -215,7 +216,7 @@ pub(crate) enum AppEvent {
     /// Fetch a bounded batch of persistent history entries for reverse search.
     LookupMessageHistoryBatch {
         thread_id: ThreadId,
-        end_offset: usize,
+        cursor: HistoryBatchCursor,
         log_id: u64,
     },
 

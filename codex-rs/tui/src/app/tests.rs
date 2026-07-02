@@ -459,7 +459,8 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
         }
     );
 
-    app.lookup_message_history_batch(thread_id, /*end_offset*/ 10, /*log_id*/ 1)
+    let cursor = codex_message_history::HistoryBatchCursor::new(10);
+    app.lookup_message_history_batch(thread_id, cursor, /*log_id*/ 1)
         .await?;
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
         .await
@@ -476,10 +477,10 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     assert_eq!(
         event,
         HistoryLookupResponse::Batch {
-            end_offset: 10,
+            cursor,
             log_id: 1,
             entries: Vec::new(),
-            next_older_offset: None,
+            next_older_cursor: None,
         }
     );
 

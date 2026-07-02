@@ -32,22 +32,42 @@ async fn batch_for(entries: &[HistoryEntry], end_offset: usize) -> (TempDir, His
     let home = TempDir::new().expect("temp dir");
     let config = write_entries(&home, entries);
     let (log_id, _) = history_metadata(&config).await;
-    let batch = lookup_batch(log_id, end_offset, &config);
+    let batch = lookup_batch(log_id, HistoryBatchCursor::new(end_offset), &config);
     (home, batch)
 }
 
 #[tokio::test]
 async fn search_batch_returns_bounded_newest_first_absolute_offsets() {
-    let entries: Vec<_> = (0..200)
+    let entries: Vec<_> = (0..400)
         .map(|offset| entry(offset, format!("row {offset}")))
         .collect();
-    let (_home, batch) = batch_for(&entries, /*end_offset*/ 199).await;
+    let (home, batch) = batch_for(&entries, /*end_offset*/ 399).await;
 
     assert_eq!(batch.entries.len(), 128);
-    assert_eq!(batch.entries.first().map(|entry| entry.offset), Some(199));
-    assert_eq!(batch.entries.last().map(|entry| entry.offset), Some(72));
-    assert_eq!(batch.next_older_offset, Some(71));
-    assert_eq!(batch.entries[0].entry, Some(entries[199].clone()));
+    assert_eq!(batch.entries.first().map(|entry| entry.offset), Some(399));
+    assert_eq!(batch.entries.last().map(|entry| entry.offset), Some(272));
+    let next_cursor = batch.next_older_cursor.expect("older cursor");
+    assert_eq!(next_cursor.end_offset(), 271);
+    let expected_byte_position: u64 = entries[..272]
+        .iter()
+        .map(|entry| {
+            u64::try_from(serde_json::to_vec(entry).expect("serialize entry").len() + 1)
+                .expect("serialized row length should fit u64")
+        })
+        .sum();
+    assert_eq!(next_cursor.byte_position(), Some(expected_byte_position));
+    assert_eq!(batch.entries[0].entry, Some(entries[399].clone()));
+
+    let config = HistoryConfig::new(home.path(), &History::default());
+    let (log_id, _) = history_metadata(&config).await;
+    let mut offsets: Vec<_> = batch.entries.iter().map(|entry| entry.offset).collect();
+    let mut cursor = Some(next_cursor);
+    while let Some(next_cursor) = cursor {
+        let older = lookup_batch(log_id, next_cursor, &config);
+        offsets.extend(older.entries.iter().map(|entry| entry.offset));
+        cursor = older.next_older_cursor;
+    }
+    assert_eq!(offsets, (0..400).rev().collect::<Vec<_>>());
 }
 
 #[tokio::test]
@@ -65,7 +85,7 @@ async fn search_batch_stitches_chunks_and_keeps_malformed_offsets() {
     let (log_id, _) = history_metadata(&config).await;
 
     assert_eq!(
-        lookup_batch(log_id, /*end_offset*/ 2, &config),
+        lookup_batch(log_id, HistoryBatchCursor::new(2), &config),
         HistoryBatch {
             entries: vec![
                 HistoryBatchEntry {
@@ -81,7 +101,7 @@ async fn search_batch_stitches_chunks_and_keeps_malformed_offsets() {
                     entry: Some(first),
                 },
             ],
-            next_older_offset: None,
+            next_older_cursor: None,
         }
     );
 }
@@ -93,7 +113,7 @@ async fn search_batch_preserves_identity_append_trim_and_short_file_semantics() 
     let config = write_entries(&home, &initial);
     let (log_id, _) = history_metadata(&config).await;
     assert_eq!(
-        lookup_batch(log_id.wrapping_add(1), /*end_offset*/ 1, &config),
+        lookup_batch(log_id.wrapping_add(1), HistoryBatchCursor::new(1), &config),
         HistoryBatch::default()
     );
 
@@ -107,7 +127,7 @@ async fn search_batch_preserves_identity_append_trim_and_short_file_semantics() 
         serde_json::to_string(&entry(2, "appended")).expect("serialize append")
     )
     .expect("append entry");
-    let batch = lookup_batch(log_id, /*end_offset*/ 1, &config);
+    let batch = lookup_batch(log_id, HistoryBatchCursor::new(1), &config);
     assert_eq!(
         batch.entries,
         vec![
@@ -131,14 +151,14 @@ async fn search_batch_preserves_identity_append_trim_and_short_file_semantics() 
     append_entry(&newest, "session", &trimmed_config)
         .await
         .expect("append and trim");
-    let trimmed = lookup_batch(log_id, /*end_offset*/ 20, &trimmed_config);
+    let trimmed = lookup_batch(log_id, HistoryBatchCursor::new(20), &trimmed_config);
     assert_eq!(trimmed.entries.len(), 1);
     assert_eq!(trimmed.entries[0].offset, 0);
     assert_eq!(
         trimmed.entries[0].entry.as_ref().map(|entry| &entry.text),
         Some(&newest)
     );
-    assert_eq!(trimmed.next_older_offset, None);
+    assert_eq!(trimmed.next_older_cursor, None);
 }
 
 #[tokio::test]
@@ -155,16 +175,20 @@ async fn search_batch_enforces_byte_cap_and_oversized_row_progress() {
     assert_eq!(batch.entries.len(), 3);
     assert_eq!(batch.entries.first().map(|entry| entry.offset), Some(4));
     assert_eq!(batch.entries.last().map(|entry| entry.offset), Some(2));
-    assert_eq!(batch.next_older_offset, Some(1));
+    assert_eq!(
+        batch.next_older_cursor.expect("older cursor").end_offset(),
+        1
+    );
 
     let entries = vec![entry(0, "small"), entry(1, "x".repeat(70_000))];
     let (home, oversized) = batch_for(&entries, /*end_offset*/ 1).await;
     assert_eq!(oversized.entries.len(), 1);
     assert_eq!(oversized.entries[0].entry, Some(entries[1].clone()));
-    assert_eq!(oversized.next_older_offset, Some(0));
+    let next_cursor = oversized.next_older_cursor.expect("older cursor");
+    assert_eq!(next_cursor.end_offset(), 0);
     let config = HistoryConfig::new(home.path(), &History::default());
     let (log_id, _) = history_metadata(&config).await;
-    let next = lookup_batch(log_id, /*end_offset*/ 0, &config);
+    let next = lookup_batch(log_id, next_cursor, &config);
     assert_eq!(next.entries[0].entry, Some(entries[0].clone()));
-    assert_eq!(next.next_older_offset, None);
+    assert_eq!(next.next_older_cursor, None);
 }

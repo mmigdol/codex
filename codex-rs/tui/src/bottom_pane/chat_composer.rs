@@ -850,15 +850,15 @@ impl ChatComposer {
     pub(crate) fn on_history_batch_response(
         &mut self,
         log_id: u64,
-        end_offset: usize,
+        cursor: codex_message_history::HistoryBatchCursor,
         entries: Vec<crate::app_event::HistoryBatchEntryResponse>,
-        next_older_offset: Option<usize>,
+        next_older_cursor: Option<codex_message_history::HistoryBatchCursor>,
     ) -> bool {
         let Some(result) = self.history.on_batch_response(
             log_id,
-            end_offset,
+            cursor,
             entries,
-            next_older_offset,
+            next_older_cursor,
             &self.app_event_tx,
         ) else {
             return false;

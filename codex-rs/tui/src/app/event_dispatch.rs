@@ -434,10 +434,10 @@ impl App {
             }
             AppEvent::LookupMessageHistoryBatch {
                 thread_id,
-                end_offset,
+                cursor,
                 log_id,
             } => {
-                self.lookup_message_history_batch(thread_id, end_offset, log_id)
+                self.lookup_message_history_batch(thread_id, cursor, log_id)
                     .await?;
             }
             AppEvent::ApproveRecentAutoReviewDenial { thread_id, id } => {

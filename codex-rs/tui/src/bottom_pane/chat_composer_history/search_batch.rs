@@ -13,9 +13,9 @@ impl ChatComposerHistory {
     pub(crate) fn on_batch_response(
         &mut self,
         log_id: u64,
-        end_offset: usize,
+        cursor: codex_message_history::HistoryBatchCursor,
         entries: Vec<HistoryBatchEntryResponse>,
-        next_older_offset: Option<usize>,
+        next_older_cursor: Option<codex_message_history::HistoryBatchCursor>,
         app_event_tx: &AppEventSender,
     ) -> Option<HistorySearchResult> {
         if self.persistent_log_id != Some(log_id) {
@@ -39,13 +39,13 @@ impl ChatComposerHistory {
             .collect();
 
         let Some(PendingHistorySearch::Batch {
-            end_offset: awaited_end,
+            cursor: awaited_cursor,
             boundary_if_exhausted,
         }) = self.search.as_ref().and_then(|search| search.awaiting)
         else {
             return None;
         };
-        if awaited_end != end_offset {
+        if awaited_cursor != cursor {
             return None;
         }
 
@@ -58,9 +58,9 @@ impl ChatComposerHistory {
             }
         }
 
-        let result = if let Some(next_offset) = next_older_offset {
+        let result = if let Some(next_cursor) = next_older_cursor {
             self.advance_older_search_with_batches_from(
-                next_offset,
+                next_cursor,
                 boundary_if_exhausted,
                 app_event_tx,
             )
@@ -85,7 +85,7 @@ impl ChatComposerHistory {
                 .exhausted_search_result(HistorySearchDirection::Older, boundary_if_exhausted);
         };
         self.advance_older_search_with_batches_from(
-            next_offset,
+            codex_message_history::HistoryBatchCursor::new(next_offset),
             boundary_if_exhausted,
             app_event_tx,
         )
@@ -93,10 +93,11 @@ impl ChatComposerHistory {
 
     fn advance_older_search_with_batches_from(
         &mut self,
-        mut offset: usize,
+        mut cursor: codex_message_history::HistoryBatchCursor,
         boundary_if_exhausted: bool,
         app_event_tx: &AppEventSender,
     ) -> HistorySearchResult {
+        let mut offset = cursor.end_offset();
         loop {
             if let Some(entry) = self.entry_at_cached_offset(offset) {
                 if self.search_matches(&entry) && self.search_result_is_unique(&entry) {
@@ -106,7 +107,7 @@ impl ChatComposerHistory {
                 && offset < self.persistent_entry_count
             {
                 return self.request_older_search_batch(
-                    offset,
+                    cursor,
                     boundary_if_exhausted,
                     app_event_tx,
                 );
@@ -117,12 +118,13 @@ impl ChatComposerHistory {
                     .exhausted_search_result(HistorySearchDirection::Older, boundary_if_exhausted);
             };
             offset = next_offset;
+            cursor = codex_message_history::HistoryBatchCursor::new(offset);
         }
     }
 
     fn request_older_search_batch(
         &mut self,
-        end_offset: usize,
+        cursor: codex_message_history::HistoryBatchCursor,
         boundary_if_exhausted: bool,
         app_event_tx: &AppEventSender,
     ) -> HistorySearchResult {
@@ -132,13 +134,13 @@ impl ChatComposerHistory {
         };
         if let Some(search) = self.search.as_mut() {
             search.awaiting = Some(PendingHistorySearch::Batch {
-                end_offset,
+                cursor,
                 boundary_if_exhausted,
             });
         }
         app_event_tx.send(AppEvent::LookupMessageHistoryBatch {
             thread_id,
-            end_offset,
+            cursor,
             log_id,
         });
         HistorySearchResult::Pending

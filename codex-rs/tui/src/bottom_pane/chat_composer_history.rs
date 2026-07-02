@@ -19,6 +19,7 @@ use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::MentionBinding;
 use crate::mention_codec::decode_history_mentions_with_at_mentions;
+use codex_message_history::HistoryBatchCursor;
 use codex_protocol::ThreadId;
 use codex_protocol::user_input::TextElement;
 
@@ -230,7 +231,7 @@ enum PendingHistorySearch {
         boundary_if_exhausted: bool,
     },
     Batch {
-        end_offset: usize,
+        cursor: HistoryBatchCursor,
         boundary_if_exhausted: bool,
     },
 }
@@ -1289,22 +1290,22 @@ mod tests {
                 &tx,
             )
         );
-        let AppEvent::LookupMessageHistoryBatch { end_offset, .. } =
+        let AppEvent::LookupMessageHistoryBatch { cursor, .. } =
             rx.try_recv().expect("expected oldest batch")
         else {
             panic!("unexpected event variant");
         };
-        assert_eq!(end_offset, 0);
+        assert_eq!(cursor.end_offset(), 0);
         assert_eq!(
             Some(HistorySearchResult::AtBoundary),
             history.on_batch_response(
                 /*log_id*/ 1,
-                /*end_offset*/ 0,
+                cursor,
                 vec![HistoryBatchEntryResponse {
                     offset: 0,
                     entry: Some("also not a match".into()),
                 }],
-                /*next_older_offset*/ None,
+                /*next_older_cursor*/ None,
                 &tx,
             )
         );
@@ -1363,14 +1364,14 @@ mod tests {
         );
         let AppEvent::LookupMessageHistoryBatch {
             thread_id: response_thread_id,
-            end_offset,
+            cursor,
             log_id,
         } = rx.try_recv().expect("expected next lookup")
         else {
             panic!("unexpected event variant");
         };
         assert_eq!(response_thread_id, thread_id);
-        assert_eq!(end_offset, 1);
+        assert_eq!(cursor.end_offset(), 1);
         assert_eq!(log_id, 1);
 
         assert_eq!(
@@ -1379,12 +1380,12 @@ mod tests {
             ))),
             history.on_batch_response(
                 /*log_id*/ 1,
-                /*end_offset*/ 1,
+                cursor,
                 vec![HistoryBatchEntryResponse {
                     offset: 1,
                     entry: Some("OLDER command".into()),
                 }],
-                /*next_older_offset*/ Some(0),
+                Some(HistoryBatchCursor::new(0)),
                 &tx
             )
         );
@@ -1439,19 +1440,19 @@ mod tests {
                 &tx,
             )
         );
-        let AppEvent::LookupMessageHistoryBatch { end_offset, .. } =
+        let AppEvent::LookupMessageHistoryBatch { cursor, .. } =
             rx.try_recv().expect("expected next batch after duplicate")
         else {
             panic!("unexpected event variant");
         };
-        assert_eq!(end_offset, 1);
+        assert_eq!(cursor.end_offset(), 1);
         assert_eq!(
             Some(HistorySearchResult::Found(HistoryEntry::new(
                 "needle older".to_string()
             ))),
             history.on_batch_response(
                 /*log_id*/ 1,
-                /*end_offset*/ 1,
+                cursor,
                 vec![
                     HistoryBatchEntryResponse {
                         offset: 1,
@@ -1462,7 +1463,7 @@ mod tests {
                         entry: Some("needle older".into()),
                     },
                 ],
-                /*next_older_offset*/ None,
+                /*next_older_cursor*/ None,
                 &tx,
             )
         );
