@@ -22,6 +22,8 @@ If the command already matches an exec-policy allow rule, the command can be aut
 
 Use full escalation only when sandboxed additional permissions cannot satisfy the task.
 
+On macOS CLI sessions, browser automation that launches Playwright/Chromium for rendered UI verification should request escalation before the first run; headless Chromium often needs macOS process permissions that the sandbox blocks.
+
 - `sandbox_permissions: "require_escalated"`
 - Include `justification` as a short question asking for approval.
 - Optionally include `prefix_rule` to suggest a reusable allow rule.

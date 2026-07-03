@@ -37,6 +37,7 @@ While commands are running inside the sandbox, here are some scenarios that will
 
 - You need to run a command that writes to a directory that requires it (e.g. running tests that write to /var)
 - You need to run a GUI app (e.g., open/xdg-open/osascript) to open browsers or files.
+- On macOS CLI sessions, browser automation that launches Playwright/Chromium for rendered UI verification should request escalation before the first run; headless Chromium often needs macOS process permissions that the sandbox blocks.
 - If you run a command that is important to solving the user's query, but it fails because of sandboxing or with a likely sandbox-related network error (for example DNS/host resolution, registry/index access, or dependency download failure), rerun the command with `require_escalated`. ALWAYS proceed to use the `sandbox_permissions` and `justification` parameters. do not message the user before requesting approval for the command.
 - You are about to take a potentially destructive action such as an `rm` or `git reset` that the user did not explicitly ask for.
 - Be judicious with escalating, but if completing the user's request requires it, you should do so - don't try and circumvent approvals by using other tools.

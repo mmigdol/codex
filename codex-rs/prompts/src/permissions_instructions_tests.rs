@@ -193,6 +193,9 @@ fn includes_request_permission_rule_instructions_for_on_request_when_enabled() {
     let text = instructions.body();
     assert!(text.contains("with_additional_permissions"));
     assert!(text.contains("additional_permissions"));
+    assert!(text.contains(
+        "browser automation that launches Playwright/Chromium for rendered UI verification"
+    ));
 }
 
 #[test]
@@ -348,6 +351,10 @@ fn granular_policy_includes_command_permission_instructions_when_sandbox_approva
         /*exec_permission_approvals_enabled*/ true,
         /*request_permissions_tool_enabled*/ false,
     );
+
+    assert!(text.contains(
+        "browser automation that launches Playwright/Chromium for rendered UI verification"
+    ));
 
     assert_eq!(
         text,
