@@ -6,6 +6,7 @@ use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::protocol::HookRunSummary;
 
 use crate::engine::ConfiguredHandler;
+use crate::engine::command_runner::CommandRunResult;
 use crate::engine::dispatcher;
 
 /// Identifies a thread-spawned subagent when a normal hook runs inside it.
@@ -42,6 +43,70 @@ pub(crate) fn append_additional_context(
         text: additional_context.clone(),
     });
     additional_contexts_for_model.push(additional_context);
+}
+
+pub(crate) fn command_failure_entry(
+    handler: &ConfiguredHandler,
+    run_result: &CommandRunResult,
+    message: impl Into<String>,
+) -> HookOutputEntry {
+    let mut lines = vec![
+        message.into(),
+        format!("hook: {:?}", handler.event_name),
+        format!(
+            "source: {:?} {}",
+            handler.source,
+            handler.source_path.display()
+        ),
+        format!("command: {}", handler.command),
+    ];
+    if let Some(error) = trimmed_non_empty(run_result.error.as_deref().unwrap_or_default()) {
+        lines.push(format!("runtime error: {error}"));
+    }
+    if let Some(stderr) = trimmed_non_empty(&run_result.stderr) {
+        lines.push(format!("stderr: {}", bounded_output(stderr)));
+    }
+    if let Some(stdout) = trimmed_non_empty(&run_result.stdout) {
+        lines.push(format!("stdout: {}", bounded_output(stdout)));
+    }
+    HookOutputEntry {
+        kind: HookOutputEntryKind::Error,
+        text: lines.join("\n"),
+    }
+}
+
+pub(crate) fn command_exit_failure_entry(
+    handler: &ConfiguredHandler,
+    run_result: &CommandRunResult,
+    exit_code: i32,
+) -> HookOutputEntry {
+    command_failure_entry(
+        handler,
+        run_result,
+        format!("{:?} hook exited with code {exit_code}", handler.event_name),
+    )
+}
+
+pub(crate) fn command_no_status_failure_entry(
+    handler: &ConfiguredHandler,
+    run_result: &CommandRunResult,
+) -> HookOutputEntry {
+    command_failure_entry(
+        handler,
+        run_result,
+        format!("{:?} hook exited without a status code", handler.event_name),
+    )
+}
+
+fn bounded_output(text: String) -> String {
+    const MAX_CHARS: usize = 1_000;
+    let mut chars = text.chars();
+    let bounded: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{bounded}\n... truncated ...")
+    } else {
+        bounded
+    }
 }
 
 pub(crate) fn flatten_additional_contexts<'a>(

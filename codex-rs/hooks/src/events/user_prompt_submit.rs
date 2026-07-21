@@ -144,10 +144,11 @@ fn parse_completed(
     match run_result.error.as_deref() {
         Some(error) => {
             status = HookRunStatus::Failed;
-            entries.push(HookOutputEntry {
-                kind: HookOutputEntryKind::Error,
-                text: error.to_string(),
-            });
+            entries.push(common::command_failure_entry(
+                handler,
+                &run_result,
+                format!("{:?} hook failed to run: {error}", handler.event_name),
+            ));
         }
         None => match run_result.exit_code {
             Some(0) => {
@@ -225,25 +226,27 @@ fn parse_completed(
                     });
                 } else {
                     status = HookRunStatus::Failed;
-                    entries.push(HookOutputEntry {
-                        kind: HookOutputEntryKind::Error,
-                        text: "UserPromptSubmit hook exited with code 2 but did not write a blocking reason to stderr".to_string(),
-                    });
+                    entries.push(common::command_failure_entry(
+                        handler,
+                        &run_result,
+                        "UserPromptSubmit hook exited with code 2 but did not write a blocking reason to stderr",
+                    ));
                 }
             }
             Some(exit_code) => {
                 status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: format!("hook exited with code {exit_code}"),
-                });
+                entries.push(common::command_exit_failure_entry(
+                    handler,
+                    &run_result,
+                    exit_code,
+                ));
             }
             None => {
                 status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: "hook exited without a status code".to_string(),
-                });
+                entries.push(common::command_no_status_failure_entry(
+                    handler,
+                    &run_result,
+                ));
             }
         },
     }

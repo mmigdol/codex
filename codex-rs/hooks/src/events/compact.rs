@@ -238,10 +238,11 @@ fn parse_pre_completed(
     match run_result.error.as_deref() {
         Some(error) => {
             status = HookRunStatus::Failed;
-            entries.push(HookOutputEntry {
-                kind: HookOutputEntryKind::Error,
-                text: error.to_string(),
-            });
+            entries.push(common::command_failure_entry(
+                handler,
+                &run_result,
+                format!("{:?} hook failed to run: {error}", handler.event_name),
+            ));
         }
         None => match run_result.exit_code {
             Some(0) => {
@@ -283,18 +284,18 @@ fn parse_pre_completed(
             }
             Some(code) => {
                 status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: common::trimmed_non_empty(&run_result.stderr)
-                        .unwrap_or_else(|| format!("hook exited with code {code}")),
-                });
+                entries.push(common::command_exit_failure_entry(
+                    handler,
+                    &run_result,
+                    code,
+                ));
             }
             None => {
                 status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: "hook process terminated without an exit code".to_string(),
-                });
+                entries.push(common::command_no_status_failure_entry(
+                    handler,
+                    &run_result,
+                ));
             }
         },
     }
@@ -341,10 +342,11 @@ fn parse_completed(
     match run_result.error.as_deref() {
         Some(error) => {
             status = HookRunStatus::Failed;
-            entries.push(HookOutputEntry {
-                kind: HookOutputEntryKind::Error,
-                text: error.to_string(),
-            });
+            entries.push(common::command_failure_entry(
+                handler,
+                &run_result,
+                format!("{:?} hook failed to run: {error}", handler.event_name),
+            ));
         }
         None => match run_result.exit_code {
             Some(0) => {
@@ -386,18 +388,18 @@ fn parse_completed(
             }
             Some(code) => {
                 status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: common::trimmed_non_empty(&run_result.stderr)
-                        .unwrap_or_else(|| format!("hook exited with code {code}")),
-                });
+                entries.push(common::command_exit_failure_entry(
+                    handler,
+                    &run_result,
+                    code,
+                ));
             }
             None => {
                 status = HookRunStatus::Failed;
-                entries.push(HookOutputEntry {
-                    kind: HookOutputEntryKind::Error,
-                    text: "hook process terminated without an exit code".to_string(),
-                });
+                entries.push(common::command_no_status_failure_entry(
+                    handler,
+                    &run_result,
+                ));
             }
         },
     }

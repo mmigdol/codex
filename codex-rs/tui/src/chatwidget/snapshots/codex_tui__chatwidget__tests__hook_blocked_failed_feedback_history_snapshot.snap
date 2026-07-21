@@ -6,4 +6,8 @@ expression: rendered
   feedback: run tests before touching the fixture
 
 • PostToolUse hook (failed)
-  error: hook exited with code 7
+  error: PostToolUse hook exited with code 7
+    hook: PostToolUse
+    source: User /tmp/hooks.json
+    command: ./hooks/post-tool-use.sh
+    stderr: permission denied
