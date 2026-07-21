@@ -269,7 +269,7 @@ async fn requirements_managed_hooks_execute_windows_command_override() {
     fs::create_dir_all(managed_dir.as_path()).expect("create managed hooks dir");
 
     let managed_hooks = managed_hooks_for_current_platform(
-        managed_dir,
+        managed_dir.clone(),
         HookEventsToml {
             pre_tool_use: vec![MatcherGroup {
                 matcher: Some("^Bash$".to_string()),
@@ -330,13 +330,24 @@ async fn requirements_managed_hooks_execute_windows_command_override() {
 
     assert!(!outcome.should_block);
     let expected_exit_code = if cfg!(windows) { 19 } else { 17 };
+    let expected_command = if cfg!(windows) {
+        "exit /B 19"
+    } else {
+        "exit 17"
+    };
     assert_eq!(outcome.hook_events.len(), 1);
     assert_eq!(outcome.hook_events[0].run.status, HookRunStatus::Failed);
     assert_eq!(
         outcome.hook_events[0].run.entries,
         vec![HookOutputEntry {
             kind: HookOutputEntryKind::Error,
-            text: format!("hook exited with code {expected_exit_code}"),
+            text: format!(
+                "PreToolUse hook exited with code {expected_exit_code}\n\
+                 hook: PreToolUse\n\
+                 source: LegacyManagedConfigMdm {}\n\
+                 command: {expected_command}",
+                managed_dir.display()
+            ),
         }]
     );
 }

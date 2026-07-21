@@ -3481,7 +3481,7 @@ async fn blocked_and_failed_hooks_render_feedback_and_errors() {
             codex_app_server_protocol::HookRunStatus::Failed,
             vec![codex_app_server_protocol::HookOutputEntry {
                 kind: codex_app_server_protocol::HookOutputEntryKind::Error,
-                text: "hook exited with code 7".to_string(),
+                text: "PostToolUse hook exited with code 7\nhook: PostToolUse\nsource: User /tmp/hooks.json\ncommand: ./hooks/post-tool-use.sh\nstderr: permission denied".to_string(),
             }],
         ),
     );
@@ -3498,7 +3498,9 @@ async fn blocked_and_failed_hooks_render_feedback_and_errors() {
         "expected blocked hook feedback: {rendered:?}"
     );
     assert!(
-        rendered.contains("PostToolUse hook (failed)\n  error: hook exited with code 7"),
+        rendered.contains(
+            "PostToolUse hook (failed)\n  error: PostToolUse hook exited with code 7\n    hook: PostToolUse\n    source: User /tmp/hooks.json\n    command: ./hooks/post-tool-use.sh\n    stderr: permission denied"
+        ),
         "expected failed hook error: {rendered:?}"
     );
 }
